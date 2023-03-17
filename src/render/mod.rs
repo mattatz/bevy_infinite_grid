@@ -6,17 +6,17 @@ use std::borrow::Cow;
 
 use bevy::{
     core_pipeline::core_3d::Transparent3d,
-    ecs::system::{
-        lifetimeless::{Read, SQuery, SRes},
+    ecs::{system::{
+        lifetimeless::{Read, SRes},
         SystemParamItem,
-    },
+    }, query::ROQueryItem},
     prelude::*,
     reflect::TypeUuid,
     render::{
         mesh::PrimitiveTopology,
         render_phase::{
-            AddRenderCommand, DrawFunctions, EntityRenderCommand, RenderCommandResult, RenderPhase,
-            SetItemPipeline,
+            AddRenderCommand, DrawFunctions, RenderCommand, RenderCommandResult, RenderPhase,
+            SetItemPipeline, PhaseItem,
         },
         render_resource::{
             BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
@@ -24,14 +24,14 @@ use bevy::{
             BufferBindingType, BufferSize, ColorTargetState, ColorWrites, CompareFunction,
             DepthBiasState, DepthStencilState, DynamicUniformBuffer, FragmentState,
             MultisampleState, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor,
-            SamplerBindingType, ShaderStages, ShaderType, SpecializedRenderPipeline,
+            SamplerBindingType, ShaderStages, ShaderType, ShaderDefVal, SpecializedRenderPipeline,
             SpecializedRenderPipelines, StencilFaceState, StencilState, TextureFormat,
             TextureSampleType, TextureViewDimension, VertexState,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::BevyDefault,
         view::{ExtractedView, VisibleEntities},
-        Extract, RenderApp, RenderStage,
+        Extract, RenderApp, RenderSet,
     },
 };
 
@@ -127,16 +127,18 @@ struct GridViewBindGroup {
 
 struct SetGridViewBindGroup<const I: usize>;
 
-impl<const I: usize> EntityRenderCommand for SetGridViewBindGroup<I> {
-    type Param = SQuery<(Read<GridViewUniformOffset>, Read<GridViewBindGroup>)>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetGridViewBindGroup<I> {
+    type Param = ();
+    type ViewWorldQuery = (Read<GridViewUniformOffset>, Read<GridViewBindGroup>);
+    type ItemWorldQuery = ();
 
     fn render<'w>(
-        view: Entity,
-        _item: Entity,
+        item: &P,
+        (view_uniform, bind_group): ROQueryItem<'w, Self::ViewWorldQuery>,
+        entity: ROQueryItem<'w, Self::ItemWorldQuery>,
         param: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let (view_uniform, bind_group) = param.get_inner(view).unwrap();
         pass.set_bind_group(I, &bind_group.value, &[view_uniform.offset]);
 
         RenderCommandResult::Success
@@ -145,33 +147,36 @@ impl<const I: usize> EntityRenderCommand for SetGridViewBindGroup<I> {
 
 struct SetInfiniteGridBindGroup<const I: usize>;
 
-impl<const I: usize> EntityRenderCommand for SetInfiniteGridBindGroup<I> {
-    type Param = (
-        SRes<InfiniteGridBindGroup>,
-        SQuery<Read<InfiniteGridUniformOffset>>,
-    );
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetInfiniteGridBindGroup<I> {
+    type Param = SRes<InfiniteGridBindGroup>;
+    type ViewWorldQuery = Read<InfiniteGridUniformOffset>;
+    type ItemWorldQuery = ();
 
     fn render<'w>(
-        _view: Entity,
-        item: Entity,
-        (bind_group, query): SystemParamItem<'w, '_, Self::Param>,
+        item: &P,
+        offset: ROQueryItem<'w, Self::ViewWorldQuery>,
+        entity: ROQueryItem<'w, Self::ItemWorldQuery>,
+        bind_group: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let offset = query.get_inner(item).unwrap();
         pass.set_bind_group(I, &bind_group.into_inner().value, &[offset.offset]);
+
         RenderCommandResult::Success
     }
 }
 
 struct FinishDrawInfiniteGrid;
 
-impl EntityRenderCommand for FinishDrawInfiniteGrid {
+impl<P: PhaseItem> RenderCommand<P> for FinishDrawInfiniteGrid {
     type Param = ();
+    type ViewWorldQuery = ();
+    type ItemWorldQuery = ();
 
     fn render<'w>(
-        _view: Entity,
-        _item: Entity,
-        _param: SystemParamItem<'w, '_, Self::Param>,
+        item: &P,
+        view: ROQueryItem<'w, Self::ViewWorldQuery>,
+        entity: ROQueryItem<'w, Self::ItemWorldQuery>,
+        param: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         pass.draw(0..4, 0..1);
@@ -514,12 +519,10 @@ impl SpecializedRenderPipeline for InfiniteGridPipeline {
                     .then(|| "grid-render-pipeline")
                     .unwrap_or("grid-render-pipeline-shadowless"),
             )),
-            layout: Some(
-                [self.view_layout.clone(), self.infinite_grid_layout.clone()]
-                    .into_iter()
-                    .chain(key.has_shadows.then(|| self.grid_shadows_layout.clone()))
-                    .collect(),
-            ),
+            layout: [self.view_layout.clone(), self.infinite_grid_layout.clone()]
+                .into_iter()
+                .chain(key.has_shadows.then(|| self.grid_shadows_layout.clone()))
+                .collect(),
             vertex: VertexState {
                 shader: SHADER_HANDLE.typed(),
                 shader_defs: vec![],
@@ -560,7 +563,7 @@ impl SpecializedRenderPipeline for InfiniteGridPipeline {
                 shader: SHADER_HANDLE.typed(),
                 shader_defs: key
                     .has_shadows
-                    .then(|| "SHADOWS".to_string())
+                    .then(|| ShaderDefVal::from("SHADOWS"))
                     .into_iter()
                     .collect(),
                 entry_point: Cow::Borrowed("fragment"),
@@ -570,6 +573,7 @@ impl SpecializedRenderPipeline for InfiniteGridPipeline {
                     write_mask: ColorWrites::ALL,
                 })],
             }),
+            push_constant_ranges: vec![],
         }
     }
 }
@@ -587,16 +591,17 @@ pub fn render_app_builder(app: &mut App) {
         .init_resource::<InfiniteGridPipeline>()
         .init_resource::<SpecializedRenderPipelines<InfiniteGridPipeline>>()
         .add_render_command::<Transparent3d, DrawInfiniteGrid>()
-        .add_system_to_stage(RenderStage::Extract, extract_infinite_grids)
-        .add_system_to_stage(
-            RenderStage::Extract,
-            extract_grid_shadows.before(extract_infinite_grids), // order to minimize move overhead
+        .add_system(extract_infinite_grids.in_schedule(ExtractSchedule))
+        .add_system(
+            extract_grid_shadows
+                .before(extract_infinite_grids) // order to minimize move overhead
+                .in_schedule(ExtractSchedule)
         )
-        .add_system_to_stage(RenderStage::Prepare, prepare_infinite_grids)
-        .add_system_to_stage(RenderStage::Prepare, prepare_grid_shadows)
-        .add_system_to_stage(RenderStage::Prepare, prepare_grid_view_bind_groups)
-        .add_system_to_stage(RenderStage::Queue, queue_infinite_grids)
-        .add_system_to_stage(RenderStage::Queue, queue_grid_view_bind_groups);
+        .add_system(prepare_infinite_grids.in_set(RenderSet::Prepare))
+        .add_system(prepare_grid_shadows.in_set(RenderSet::Prepare))
+        .add_system(prepare_grid_view_bind_groups.in_set(RenderSet::Prepare))
+        .add_system(queue_infinite_grids.in_set(RenderSet::Queue));
+        .add_system(queue_grid_view_bind_groups.in_set(RenderSet::Queue));
 
     shadow::register_shadow(app);
 }
