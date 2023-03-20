@@ -3,7 +3,7 @@ use bevy::{
         lifetimeless::{Read, SQuery, SRes},
         SystemParamItem,
     },
-    pbr::{DrawMesh, MeshPipeline, MeshPipelineKey, NotShadowCaster, SetMeshBindGroup},
+    pbr::{DrawMesh, MeshPipeline, MeshPipelineKey, NotShadowCaster, SetMeshBindGroup, MAX_DIRECTIONAL_LIGHTS, MAX_CASCADES_PER_LIGHT},
     prelude::*,
     reflect::TypeUuid,
     render::{
@@ -25,7 +25,7 @@ use bevy::{
             RenderPassDescriptor, RenderPipelineDescriptor, Sampler, SamplerDescriptor,
             ShaderStages, ShaderType, SpecializedMeshPipeline, SpecializedMeshPipelineError,
             SpecializedMeshPipelines, TextureDescriptor, TextureDimension, TextureFormat,
-            TextureUsages, TextureView, VertexState,
+            TextureUsages, TextureView, VertexState, ShaderDefVal,
         },
         renderer::RenderDevice,
         texture::TextureCache,
@@ -143,6 +143,16 @@ impl SpecializedMeshPipeline for GridShadowPipeline {
 
         let mut bind_group_layout = vec![self.view_layout.clone()];
         let mut shader_defs = Vec::new();
+
+        // CAUTION: To fix compilation errors in WGSL, the definitions of lights need to be resolved.
+        shader_defs.push(ShaderDefVal::UInt(
+            "MAX_DIRECTIONAL_LIGHTS".to_string(),
+            MAX_DIRECTIONAL_LIGHTS as u32,
+        ));
+        shader_defs.push(ShaderDefVal::UInt(
+            "MAX_CASCADES_PER_LIGHT".to_string(),
+            MAX_CASCADES_PER_LIGHT as u32,
+        ));
 
         if layout.contains(Mesh::ATTRIBUTE_JOINT_INDEX)
             && layout.contains(Mesh::ATTRIBUTE_JOINT_WEIGHT)
